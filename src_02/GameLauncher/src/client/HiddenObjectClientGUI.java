@@ -10,17 +10,20 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.Iterator; // (추가)
+import java.util.Iterator; 
 import java.util.List;
 
+// 실제 '게임 화면'을 담당, GameLauncher에 의해 실행됨.
 public class HiddenObjectClientGUI extends JFrame {
 
-    // (기존 코드와 동일)
+    // --- 통신 관련 ---
     private Socket socket;
     private ObjectOutputStream out;
     private ObjectInputStream in;
     private final String playerName;
     private final String difficulty;
+
+    // --- UI 컴포넌트 ---
     private JLabel timerLabel;
     private JLabel roundLabel;
     private JTextArea statusArea;
@@ -28,33 +31,42 @@ public class HiddenObjectClientGUI extends JFrame {
     private JTextArea scoreArea;
     private JTextField inputField;
     private GameBoardPanel gameBoardPanel;
+
+    // --- 게임 상태 ---
     private int timeLeft = 120;
     private Timer swingTimer;
-    // ...
+    private boolean isGameActive = false;
 
-    public HiddenObjectClientGUI(String host, int port, String playerName, String difficulty) {
+    public HiddenObjectClientGUI(Socket socket, ObjectInputStream in, ObjectOutputStream out, 
+                                 String playerName, String difficulty, GamePacket roundStartPacket) {
+        this.socket = socket;
+        this.in = in;
+        this.out = out;
         this.playerName = playerName;
         this.difficulty = difficulty;
 
-        setTitle("숨은 그림 찾기");
+        setTitle("숨은 그림 찾기 (플레이어: " + playerName + ")");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
         setLayout(new BorderLayout());
 
         buildUI();
         setupKeyBindings();
-        connectToServer(host, port);
+        
+        // 리스너 스레드 즉시 시작
+        Thread listenerThread = new Thread(this::listenFromServer);
+        listenerThread.setDaemon(true);
+        listenerThread.start();
+        
+        // 전달받은 ROUND_START 패킷으로 즉시 1라운드 시작
+        handlePacket(roundStartPacket); 
 
         pack(); 
         setResizable(false);
         setVisible(true);
     }
 
-    // ================= UI 구성 =================
-    // (buildUI, setupKeyBindings, connectToServer, listenFromServer, sendPacket, sendChat)
-    // (이전 코드와 100% 동일하므로 생략)
-    // ...
-    // (이하 동일한 코드)
+    // UI 구성
     private void buildUI() {
         JPanel topBar = new JPanel(new BorderLayout());
         topBar.setBackground(new Color(220, 220, 220));
@@ -69,12 +81,12 @@ public class HiddenObjectClientGUI extends JFrame {
         topBar.add(timerLabel, BorderLayout.CENTER);
         topBar.add(roundLabel, BorderLayout.EAST);
         add(topBar, BorderLayout.NORTH);
-        
+
         JPanel centerPanel = new JPanel(new BorderLayout());
         gameBoardPanel = new GameBoardPanel();
         gameBoardPanel.setPreferredSize(new Dimension(600, 450)); // 기본 크기
         centerPanel.add(gameBoardPanel, BorderLayout.CENTER);
-        
+
         JPanel rightPanel = new JPanel(new BorderLayout());
         rightPanel.setPreferredSize(new Dimension(220, 0));
         statusArea = new JTextArea("[상태창]\n");
@@ -82,7 +94,6 @@ public class HiddenObjectClientGUI extends JFrame {
         statusArea.setFont(new Font("맑은 고딕", Font.PLAIN, 12));
         statusArea.setLineWrap(true);
         statusArea.setWrapStyleWord(true);
-        
         JScrollPane statusScroll = new JScrollPane(statusArea);
         chatArea = new JTextArea("[채팅창]\n");
         chatArea.setEditable(false);
@@ -92,6 +103,9 @@ public class HiddenObjectClientGUI extends JFrame {
         JScrollPane chatScroll = new JScrollPane(chatArea);
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, statusScroll, chatScroll);
         splitPane.setResizeWeight(0.5); 
+        splitPane.setEnabled(false);
+        splitPane.setDividerLocation(0.5);
+        
         rightPanel.add(splitPane, BorderLayout.CENTER);
         scoreArea = new JTextArea();
         scoreArea.setEditable(false);
@@ -104,7 +118,7 @@ public class HiddenObjectClientGUI extends JFrame {
         rightPanel.add(scoreArea, BorderLayout.SOUTH);
         centerPanel.add(rightPanel, BorderLayout.EAST);
         add(centerPanel, BorderLayout.CENTER);
-        
+
         JPanel bottomBar = new JPanel(new BorderLayout());
         bottomBar.setBackground(new Color(230, 230, 230));
         bottomBar.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
@@ -117,11 +131,12 @@ public class HiddenObjectClientGUI extends JFrame {
         inputPanel.add(inputField, BorderLayout.CENTER);
         inputPanel.add(sendButton, BorderLayout.EAST);
         bottomBar.add(inputPanel, BorderLayout.CENTER);
-        
         inputField.addActionListener(e -> sendChat());
         sendButton.addActionListener(e -> sendChat());
         add(bottomBar, BorderLayout.SOUTH);
     }
+    
+    // 키 바인딩
     private void setupKeyBindings() {
         JRootPane root = getRootPane();
         root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
@@ -129,6 +144,7 @@ public class HiddenObjectClientGUI extends JFrame {
         root.getActionMap().put("HINT", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
+                if (!isGameActive) return;
                 GamePacket p = new GamePacket(
                         GamePacket.Type.MESSAGE,
                         playerName,
@@ -150,27 +166,8 @@ public class HiddenObjectClientGUI extends JFrame {
             }
         });
     }
-    private void connectToServer(String host, int port) {
-        try {
-            socket = new Socket(host, port);
-            out = new ObjectOutputStream(socket.getOutputStream());
-            in  = new ObjectInputStream(socket.getInputStream());
-            GamePacket join = new GamePacket(
-                    GamePacket.Type.JOIN,
-                    playerName,
-                    difficulty,
-                    true
-            );
-            sendPacket(join);
-            appendStatus("[시스템] 서버에 접속했습니다.\n");
-            Thread listener = new Thread(this::listenFromServer);
-            listener.setDaemon(true);
-            listener.start();
-        } catch (IOException e) {
-            JOptionPane.showMessageDialog(this, "서버 연결 실패: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
+
+    // 인게임 리스너
     private void listenFromServer() {
         try {
             while (true) {
@@ -181,8 +178,13 @@ public class HiddenObjectClientGUI extends JFrame {
             }
         } catch (Exception e) {
             appendStatus("[시스템] 서버 연결이 끊어졌습니다.\n");
+            JOptionPane.showMessageDialog(this, "서버 연결이 끊겼습니다.");
+            this.dispose();
+            // 런처를 다시 실행
+            SwingUtilities.invokeLater(() -> new GameLauncher());
         }
     }
+    
     private void sendPacket(GamePacket packet) {
         try {
             if (out != null) {
@@ -204,21 +206,20 @@ public class HiddenObjectClientGUI extends JFrame {
         sendPacket(chatPacket);
         inputField.setText("");
     }
-
-    // ================= 패킷 처리 =================
+    
+    // 인게임 패킷 처리
     private void handlePacket(GamePacket p) {
         switch (p.getType()) {
             case ROUND_START:
                 roundLabel.setText("라운드 " + p.getRound());
                 String imagePath = p.getMessage(); 
-                
-                // (수정) 서버로부터 '원본 정답 목록'을 받음
                 List<Rectangle> originalAnswers = p.getOriginalAnswers();
+                Dimension originalDimension = p.getOriginalDimension();
                 
-                if (imagePath != null && !imagePath.isEmpty() && originalAnswers != null) {
-                    // (수정) 게임 보드에 이미지 경로와 '원본 정답'을 함께 전달
-                    gameBoardPanel.setRoundData(imagePath, originalAnswers);
+                if (imagePath != null && !imagePath.isEmpty() && originalAnswers != null && originalDimension != null) {
+                    gameBoardPanel.setRoundData(imagePath, originalAnswers, originalDimension);
                     appendStatus("[시스템] 라운드 " + p.getRound() + " 시작!\n");
+                    isGameActive = true; 
                 } else {
                     appendStatus("[시스템] " + p.getMessage() + "\n");
                 }
@@ -228,45 +229,49 @@ public class HiddenObjectClientGUI extends JFrame {
                 break;
 
             case RESULT:
-                // (수정) 서버가 보낸 '인덱스'와 '정답/오답' 여부로 마크를 추가
                 gameBoardPanel.addMark(p.getAnswerIndex(), p.isCorrect());
                 if (p.getMessage() != null) {
                     appendStatus(p.getSender() + ": " + p.getMessage() + "\n");
                 }
                 break;
-
             case SCORE:
                 scoreArea.setText(p.getMessage());
                 break;
-            // (이하 동일)
             case MESSAGE:
-                if ("SERVER".equals(p.getSender())) {
-                    appendStatus(p.getSender() + ": " + p.getMessage() + "\n");
-                } else {
-                    appendChat(p.getSender() + ": " + p.getMessage() + "\n");
-                }
+                // 인게임에서는 채팅창에만 표시
+                appendChat(p.getSender() + ": " + p.getMessage() + "\n");
                 break;
             case TIMER_END:
+                isGameActive = false; 
                 if (swingTimer != null) swingTimer.stop();
                 timerLabel.setText("타이머: 0초");
                 timerLabel.setForeground(Color.RED); 
                 appendStatus("[시스템] " + p.getMessage() + "\n");
                 break;
             case GAME_OVER:
+                isGameActive = false; 
                 if (swingTimer != null) swingTimer.stop();
                 appendStatus("[시스템] 게임이 종료되었습니다.\n");
                 if (p.getMessage() != null) {
                     appendStatus(p.getMessage() + "\n");
                 }
+                // 게임 종료 후 3초 뒤 런처로 복귀
+                Timer exitTimer = new Timer(3000, e -> {
+                    this.dispose();
+                    SwingUtilities.invokeLater(() -> new GameLauncher());
+                });
+                exitTimer.setRepeats(false);
+                exitTimer.start();
+                break;
+            case LOBBY_UPDATE:
                 break;
             case JOIN:
             default:
                 break;
         }
     }
-
-    // ================= 로그 출력 =================
-    // (이전 코드와 100% 동일)
+    
+    // 로그 출력
     private void appendStatus(String msg) {
         statusArea.append(msg);
         statusArea.setCaretPosition(statusArea.getDocument().getLength());
@@ -275,197 +280,161 @@ public class HiddenObjectClientGUI extends JFrame {
         chatArea.append(msg);
         chatArea.setCaretPosition(chatArea.getDocument().getLength());
     }
-    // ...
 
-    // ================= 타이머 (점점 빨간색으로) =================
+    // 타이머
     private void startCountdownTimer(int seconds) {
         if (swingTimer != null) swingTimer.stop();
-
+        
         timeLeft = seconds;
         timerLabel.setText("타이머: " + timeLeft + "초");
-        timerLabel.setForeground(Color.BLACK); 
-
+        timerLabel.setForeground(Color.BLACK);
+        
         swingTimer = new Timer(1000, e -> {
-            if (timeLeft > 0) {
+            if (isGameActive && timeLeft > 0) { 
                 timeLeft--;
                 timerLabel.setText("타이머: " + timeLeft + "초");
-
                 if (timeLeft <= 30) {
                     int red = 255;
                     int green = Math.max(0, 200 - (30 - timeLeft) * 7); 
                     timerLabel.setForeground(new Color(red, green, 0));
                 }
-
                 gameBoardPanel.removeExpiredMarks();
-
                 if (timeLeft <= 0) {
                     ((Timer) e.getSource()).stop();
                 }
+            } else if (!isGameActive) {
+                 ((Timer) e.getSource()).stop();
             }
         });
         swingTimer.start();
     }
-
-    // ================= 게임 보드 패널 (대폭 수정) =================
+    
+    // 게임 보드 패널
     class GameBoardPanel extends JPanel {
         private Image backgroundImage;
-        
-        // (수정) HiddenObjectGame의 로직을 가져옴
-        private List<Rectangle> originalAnswers; // 서버가 준 원본 정답
-        private List<Rectangle> scaledAnswers;   // 클라이언트가 계산한 스케일링된 정답
-        private boolean[] foundStatus;           // 클라이언트가 추적하는 찾은 상태
-        
-        // (수정) 마크 리스트 (ClickMark -> GameMark로 변경)
+        private List<Rectangle> originalAnswers;
+        private List<Rectangle> scaledAnswers;
+        private boolean[] foundStatus;
+        private Dimension originalDimension;
         private final List<GameMark> marks = new ArrayList<>();
-        private static final int RADIUS = 20;
-
+        private static final int RADIUS = 20; 
+        
         public GameBoardPanel() {
             backgroundImage = null; 
             scaledAnswers = new ArrayList<>();
             foundStatus = new boolean[0];
-
+            
             addMouseListener(new MouseAdapter() {
                 @Override
                 public void mouseClicked(MouseEvent e) {
-                    if (timeLeft <= 0 || backgroundImage == null) return;
-
+                    if (!isGameActive || timeLeft <= 0 || backgroundImage == null || originalDimension == null) {
+                        return;
+                    }
+                    
+                    // 1. 현재 패널 크기 및 이미지 원본 크기
                     int panelW = getWidth();
                     int panelH = getHeight();
-                    int imgW = backgroundImage.getWidth(null);
-                    int imgH = backgroundImage.getHeight(null);
-
-                    // 동일한 비율과 offset 계산
+                    int imgW = originalDimension.width;
+                    int imgH = originalDimension.height;
+                    
+                    // 2. 스케일링 비율 및 오프셋 계산 (paintComponent와 동일)
                     double scale = Math.min((double) panelW / imgW, (double) panelH / imgH);
                     int drawW = (int) (imgW * scale);
                     int drawH = (int) (imgH * scale);
                     int offsetX = (panelW - drawW) / 2;
                     int offsetY = (panelH - drawH) / 2;
+                    
+                    // 3. 클릭 좌표를 원본 이미지 좌표계로 변환
+                    // (클릭 좌표 - 오프셋) / 스케일
+                    double originalX = (e.getX() - offsetX) / scale;
+                    double originalY = (e.getY() - offsetY) / scale;
 
-                    // 클릭 좌표를 이미지 좌표로 변환
-                    double imgX = (e.getX() - offsetX) / scale;
-                    double imgY = (e.getY() - offsetY) / scale;
-
-                    Point clickPoint = new Point((int) imgX, (int) imgY);
-
+                    // 4. 원본 정답 목록과 비교하여 인덱스 찾기
                     int foundIndex = -1;
-                    for (int i = 0; i < scaledAnswers.size(); i++) {
-                        if (scaledAnswers.get(i).contains(clickPoint) && !foundStatus[i]) {
+                    for (int i = 0; i < originalAnswers.size(); i++) {
+                        // 원본 정답 Rectangle과 변환된 원본 좌표 (originalX, originalY)를 비교
+                        if (originalAnswers.get(i).contains(originalX, originalY) && !foundStatus[i]) {
                             foundIndex = i;
                             break;
                         }
                     }
-
+                    
                     if (foundIndex != -1) {
                         System.out.println("클라이언트: 정답 " + foundIndex + "번 클릭");
-                        foundStatus[foundIndex] = true;
                         sendPacket(new GamePacket(GamePacket.Type.CLICK, playerName, foundIndex));
                     } else {
                         System.out.println("클라이언트: 오답 클릭 (" + e.getX() + ", " + e.getY() + ")");
-                        marks.add(new GameMark(new Point((int) imgX, (int) imgY), false));
+                        marks.add(new GameMark(new Point((int) originalX, (int) originalY), false));
                         repaint();
                     }
                 }
             });
-
         }
-        
-        // (수정) 라운드 데이터 설정 (이미지 + 원본 정답)
-        public void setRoundData(String path, List<Rectangle> originalAnswers) {
+        public void setRoundData(String path, List<Rectangle> originalAnswers, Dimension originalDimension) {
             this.originalAnswers = originalAnswers;
+            this.originalDimension = originalDimension;
             this.foundStatus = new boolean[originalAnswers.size()];
-            this.scaledAnswers.clear();
-            
+            this.scaledAnswers.clear(); // scaledAnswers는 더 이상 사용하지 않지만, 초기화 유지
             try {
                 backgroundImage = new ImageIcon(path).getImage();
                 if (backgroundImage.getWidth(null) == -1) {
                     throw new IOException("이미지 파일 로드 실패: " + path);
                 }
                 
-                // --- (핵심) HiddenObjectGame의 스케일링 로직 ---
-                int imgWidth = backgroundImage.getWidth(null);
-                int imgHeight = backgroundImage.getHeight(null);
-                
+                // BaseWidth 기준으로 Panel 크기 설정
+                int imgWidth = originalDimension.width;
+                int imgHeight = originalDimension.height;
                 int baseWidth = 600; 
                 double ratio = (double) imgHeight / imgWidth;
                 int newHeight = (int) (baseWidth * ratio);
-                
                 setPreferredSize(new Dimension(baseWidth, newHeight));
                 
-                double scaleFactor = (double) baseWidth / imgWidth;
-                recalculateScaledAnswers(scaleFactor);
-                
-                SwingUtilities.getWindowAncestor(this).pack();
-                // ------------------
-
             } catch (Exception e) {
                 e.printStackTrace();
                 backgroundImage = null; 
-                appendStatus("[에러] 이미지 로드 실패: " + path + "\n");
+                HiddenObjectClientGUI.this.appendStatus("[에러] 이미지 로드 실패: " + path + "\n");
             }
             clearMarks();
         }
         
-        // (신규) HiddenObjectGame의 createScaledRectangle 로직
-        private void recalculateScaledAnswers(double scaleFactor) {
-            scaledAnswers.clear();
-            for (Rectangle r : originalAnswers) {
-                int scaledX = (int) (r.x * scaleFactor);
-                int scaledY = (int) (r.y * scaleFactor);
-                int scaledW = (int) (r.width * scaleFactor);
-                int scaledH = (int) (r.height * scaleFactor);
-                
-                // (클릭 편의를 위한 padding)
-                int padding = (int) (10 * scaleFactor); 
-                scaledX = Math.max(0, scaledX - padding);
-                scaledY = Math.max(0, scaledY - padding);
-                scaledW += (padding * 2);
-                scaledH += (padding * 2);
-                if (scaledW <= 0) scaledW = 1;
-                if (scaledH <= 0) scaledH = 1;
-                
-                scaledAnswers.add(new Rectangle(scaledX, scaledY, scaledW, scaledH));
-            }
-            System.out.println("클라이언트: 스케일링된 정답 " + scaledAnswers.size() + "개 계산 완료.");
-        }
-
         public void clearMarks() {
             marks.clear();
             repaint();
         }
-
-        // (수정) 서버가 RESULT(index, correct)를 보내면 호출됨
         public void addMark(int answerIndex, boolean correct) {
-            if (answerIndex < 0 || answerIndex >= scaledAnswers.size()) {
-                // (인덱스가 없는 오답 클릭 - 현재 로직에선 사용 안 함)
+            if (answerIndex < 0 || answerIndex >= originalAnswers.size()) {
+                System.out.println("클라이언트: 서버로부터 잘못된 RESULT 인덱스 수신: " + answerIndex);
                 return;
             }
             
-            // (수정) 정답 인덱스(answerIndex)에 해당하는 '스케일링된' 사각형의 중심점을 찾음
-            Rectangle rect = scaledAnswers.get(answerIndex);
-            Point center = new Point(rect.x + rect.width / 2, rect.y + rect.height / 2);
+            // 마크 중심점을 원본 정답의 중심점으로 설정
+            Rectangle originalRect = originalAnswers.get(answerIndex);
+            Point center = new Point(originalRect.x + originalRect.width / 2, originalRect.y + originalRect.height / 2);
             
             marks.add(new GameMark(center, correct));
             
+            if (correct) {
+                foundStatus[answerIndex] = true;
+            }
             repaint();
         }
-        
         public void removeExpiredMarks() {
             long currentTime = System.currentTimeMillis();
+            // GameMark의 p(Point): 원본 이미지 좌표계
             if (marks.removeIf(m -> !m.correct && currentTime > m.expiryTime)) {
                 repaint();
             }
         }
-
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             Graphics2D g2 = (Graphics2D) g;
-
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON); 
             if (backgroundImage != null) {
                 int panelW = getWidth();
                 int panelH = getHeight();
-                int imgW = backgroundImage.getWidth(null);
-                int imgH = backgroundImage.getHeight(null);
+                int imgW = originalDimension.width;
+                int imgH = originalDimension.height;
 
                 // 비율 계산
                 double scale = Math.min((double) panelW / imgW, (double) panelH / imgH);
@@ -480,19 +449,22 @@ public class HiddenObjectClientGUI extends JFrame {
                 // 실제 이미지 그리기
                 g2.drawImage(backgroundImage, offsetX, offsetY, drawW, drawH, this);
 
-                // 마크 그릴 때도 같은 기준(offset+scale) 적용
+                // 마크 그릴 때 (m.p.x, m.p.y는 원본 좌표)
                 for (GameMark m : marks) {
+                    // [수정] 원본 좌표를 화면 좌표로 변환하여 그립니다.
                     int drawX = (int) (offsetX + m.p.x * scale);
                     int drawY = (int) (offsetY + m.p.y * scale);
-
+                    
                     if (m.correct) {
-                        g2.setColor(new Color(0, 255, 0, 180));
-                        g2.setStroke(new BasicStroke(3));
-                        g2.draw(new Ellipse2D.Double(
-                                drawX - RADIUS, drawY - RADIUS,
-                                RADIUS * 2, RADIUS * 2
-                        ));
+                        // ... (정답 마크 그리기 로직) ...
+                         g2.setColor(new Color(0, 255, 0, 180));
+                         g2.setStroke(new BasicStroke(3));
+                         g2.draw(new Ellipse2D.Double(
+                                 drawX - RADIUS, drawY - RADIUS,
+                                 RADIUS * 2, RADIUS * 2
+                         ));
                     } else {
+                        // ... (오답 마크 그리기 로직) ...
                         g2.setColor(Color.RED);
                         g2.setFont(new Font("맑은 고딕", Font.BOLD, 28));
                         g2.drawString("X", drawX - 10, drawY + 10);
@@ -506,48 +478,19 @@ public class HiddenObjectClientGUI extends JFrame {
                 g2.drawString("서버에서 라운드 시작 대기 중...", getWidth() / 2 - 120, getHeight() / 2);
             }
         }
-
-
-        /** (수정) GameMark (ClickMark -> GameMark) */
         class GameMark {
-            Point p; // (수정) x,y 대신 중심점 Point
+            Point p; // 원본 이미지 좌표계의 중심점
             boolean correct;
             long expiryTime; 
-
-            // (수정) 생성자가 Point를 받음
             GameMark(Point centerPoint, boolean correct) {
                 this.p = centerPoint;
                 this.correct = correct;
-                
                 if (correct) {
-                    this.expiryTime = -1;
+                    this.expiryTime = -1; 
                 } else {
-                    this.expiryTime = System.currentTimeMillis() + 5000;
+                    this.expiryTime = System.currentTimeMillis() + 5000; 
                 }
             }
         }
-    }
-
-    // ================= main =================
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> {
-            String name = JOptionPane.showInputDialog("플레이어 이름을 입력하세요:");
-            if (name == null || name.isBlank()) name = "Player";
-
-            String[] options = {"쉬움", "보통", "어려움"};
-            int sel = JOptionPane.showOptionDialog(
-                    null,
-                    "난이도를 선택하세요",
-                    "난이도",
-                    JOptionPane.DEFAULT_OPTION,
-                    JOptionPane.QUESTION_MESSAGE,
-                    null,
-                    options,
-                    options[0]
-            );
-            String diff = (sel >= 0) ? options[sel] : "쉬움";
-
-            new HiddenObjectClientGUI("127.0.0.1", 9999, name, diff);
-        });
     }
 }
