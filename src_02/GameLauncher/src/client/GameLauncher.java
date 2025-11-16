@@ -1,6 +1,7 @@
 package client;
 
 import model.GamePacket;
+import model.UserData;
 import javax.swing.*;
 import java.awt.*;
 import java.io.IOException;
@@ -9,7 +10,7 @@ import java.io.ObjectOutputStream;
 import java.net.Socket;
 import java.util.Map;
 
-// CardLayout을 사용하여 HomePanel(접속)과 WatingRoom(대기방)을 관리
+// CardLayout을 사용하여 여러 화면을 관리
 public class GameLauncher extends JFrame {
 
     // --- 통신 관련 ---
@@ -22,34 +23,166 @@ public class GameLauncher extends JFrame {
     // --- UI 관련 ---
     private CardLayout cardLayout;
     private JPanel mainPanel; 
+    private NicknameSetupPanel nicknameSetupPanel;
+    private MainMenuPanel mainMenuPanel;
     private HomePanel homePanel;
     private WaitingRoom waitingRoom;
+    private MyPagePanel myPagePanel;
 
     // --- 카드 이름 (식별자) ---
-    private static final String CARD_HOME = "HOME";
+    private static final String CARD_NICKNAME_SETUP = "NICKNAME_SETUP";
+    private static final String CARD_MAIN_MENU = "MAIN_MENU";
+    private static final String CARD_SERVER_INPUT = "SERVER_INPUT";
     private static final String CARD_LOBBY = "LOBBY";
+    private static final String CARD_MYPAGE = "MYPAGE";
+    
+    // --- 1인 플레이 관련 ---
+    private boolean isSinglePlayer = false;
 
     public GameLauncher() {
-        setTitle("시작 화면");
+        setTitle("숨은 그림 찾기");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(300, 400);
+        setSize(500, 600);
 
         cardLayout = new CardLayout();
         mainPanel = new JPanel(cardLayout);
 
-        // 1. 홈 패널 (포트/닉네임 입력) 생성
-        homePanel = new HomePanel(this);
-        mainPanel.add(homePanel, CARD_HOME);
+        // 1. 닉네임 설정 패널
+        nicknameSetupPanel = new NicknameSetupPanel(this);
+        mainPanel.add(nicknameSetupPanel, CARD_NICKNAME_SETUP);
 
-        // 2. 대기방 패널 생성
+        // 2. 메인 메뉴 패널
+        mainMenuPanel = new MainMenuPanel(this);
+        mainPanel.add(mainMenuPanel, CARD_MAIN_MENU);
+
+        // 3. 서버 접속 패널
+        homePanel = new HomePanel(this);
+        mainPanel.add(homePanel, CARD_SERVER_INPUT);
+
+        // 4. 대기방 패널
         waitingRoom = new WaitingRoom(this);
         mainPanel.add(waitingRoom, CARD_LOBBY);
 
+        // 5. 마이페이지 패널
+        myPagePanel = new MyPagePanel(this);
+        mainPanel.add(myPagePanel, CARD_MYPAGE);
+
         add(mainPanel);
-        cardLayout.show(mainPanel, CARD_HOME); // 첫 화면
+
+        // 시작 화면: 자동 로그인 확인
+        UserData userData = UserData.getInstance();
+        if (userData != null && userData.getNickname() != null) {
+            cardLayout.show(mainPanel, CARD_MAIN_MENU);
+        } else {
+            cardLayout.show(mainPanel, CARD_NICKNAME_SETUP);
+        }
 
         setLocationRelativeTo(null);
         setVisible(true);
+    }
+
+    // 메인 메뉴로 전환
+    public void switchToMainMenu() {
+        mainMenuPanel.refreshUserInfo();
+        this.setSize(500, 600);
+        cardLayout.show(mainPanel, CARD_MAIN_MENU);
+        setTitle("숨은 그림 찾기");
+    }
+    
+    // 닉네임 설정으로 전환 (로그아웃 시)
+    public void switchToNicknameSetup() {
+        nicknameSetupPanel.resetUI();
+        this.setSize(500, 600);
+        cardLayout.show(mainPanel, CARD_NICKNAME_SETUP);
+        setTitle("숨은 그림 찾기");
+    }
+
+    // 서버 접속 화면으로 전환
+    public void switchToServerInput() {
+        isSinglePlayer = false;
+        homePanel.updateUserInfo();
+        this.setSize(400, 450);
+        cardLayout.show(mainPanel, CARD_SERVER_INPUT);
+        setTitle("서버 접속");
+    }
+
+    // 마이페이지로 전환
+    public void switchToMyPage() {
+        myPagePanel.refreshData();
+        this.setSize(500, 600);
+        cardLayout.show(mainPanel, CARD_MYPAGE);
+        setTitle("마이페이지");
+    }
+    
+    // 1인 플레이 게임 시작
+    public void startSinglePlayerGame() {
+        isSinglePlayer = true;
+        UserData userData = UserData.getInstance();
+        this.playerName = userData.getNickname();
+        
+        // 난이도 선택 다이얼로그
+        String[] options = {"쉬움", "보통", "어려움"};
+        String difficulty = (String) JOptionPane.showInputDialog(
+            this,
+            "난이도를 선택하세요:",
+            "1인 플레이",
+            JOptionPane.QUESTION_MESSAGE,
+            null,
+            options,
+            options[0]
+        );
+        
+        if (difficulty != null) {
+            this.selectedDifficulty = difficulty;
+            
+            // 서버 연결
+            String host = "127.0.0.1";
+            int port = 9999;
+            
+            SwingWorker<Socket, Void> worker = new SwingWorker<Socket, Void>() {
+                @Override
+                protected Socket doInBackground() throws Exception {
+                    return new Socket(host, port);
+                }
+                
+                @Override
+                protected void done() {
+                    try {
+                        Socket socket = get();
+                        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+                        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+                        
+                        // JOIN 패킷 전송 (1인 플레이 표시)
+                        GamePacket joinPacket = new GamePacket(
+                            GamePacket.Type.JOIN,
+                            playerName,
+                            "SINGLE_" + difficulty,
+                            true
+                        );
+                        out.writeObject(joinPacket);
+                        out.flush();
+                        
+                        // 서버로부터 ROUND_START 수신 대기
+                        GamePacket roundStartPacket = (GamePacket) in.readObject();
+                        
+                        if (roundStartPacket.getType() == GamePacket.Type.ROUND_START) {
+                            GameLauncher.this.setVisible(false);
+                            new SinglePlayerGUI(socket, in, out, playerName, difficulty, roundStartPacket, GameLauncher.this);
+                        } else {
+                            throw new Exception("서버로부터 올바른 응답을 받지 못했습니다.");
+                        }
+                        
+                    } catch (Exception ex) {
+                        JOptionPane.showMessageDialog(GameLauncher.this,
+                            "서버 연결 실패: " + ex.getMessage() + "\n서버가 실행 중인지 확인하세요.",
+                            "오류",
+                            JOptionPane.ERROR_MESSAGE);
+                        ex.printStackTrace();
+                    }
+                }
+            };
+            worker.execute();
+        }
     }
 
     // 대기방(Lobby) 카드로 전환
@@ -84,14 +217,16 @@ public class GameLauncher extends JFrame {
                 
                 if (p.getType() == GamePacket.Type.ROUND_START) {
                     System.out.println("[GameLauncher] ROUND_START 감지. 대기방 리스너를 종료합니다.");
-                    break; // while 루프를 빠져나가 스레드를 정상 종료합니다.
+                    break;
                 }
             }
         } catch (Exception e) {
             if (this.isVisible()) {
-                JOptionPane.showMessageDialog(this, "서버 연결이 끊어졌습니다: " + e.getMessage());
-                cardLayout.show(mainPanel, CARD_HOME);
-                homePanel.resetUI();
+                SwingUtilities.invokeLater(() -> {
+                    JOptionPane.showMessageDialog(this, "서버 연결이 끊어졌습니다: " + e.getMessage());
+                    switchToMainMenu();
+                    homePanel.resetUI();
+                });
             } else {
                 System.out.println("[GameLauncher] 리스너가 게임 시작으로 인해 정상 종료되었습니다.");
             }
@@ -102,34 +237,30 @@ public class GameLauncher extends JFrame {
     private void handlePacket(GamePacket p) {
         switch (p.getType()) {
             case MESSAGE:
-                // 일반 채팅 또는 서버 공지
-            	waitingRoom.appendChat(p.getSender() + ": " + p.getMessage() + "\n");
+                waitingRoom.appendChat(p.getSender() + ": " + p.getMessage() + "\n");
                 break;
             case LOBBY_UPDATE:
-                // "대기방 인원" 목록 갱신
-            	waitingRoom.updateLobbyInfo(
+                waitingRoom.updateLobbyInfo(
                     p.getHostName(), 
-                    p.getPlayerReadyStatus(), // Map<String, Boolean>
+                    p.getPlayerReadyStatus(),
                     p.getDifficulty(),
                     p.getGameMode()
                 );
                 break;
             case ROUND_START:
-                // 게임 시작 신호
                 System.out.println("GameLauncher: ROUND_START 수신! 게임 창을 엽니다.");
                 
-                this.dispose(); // 1. 현재 대기방 창 닫기
+                this.setVisible(false);
                 
-                // 2. HiddenObjectClientGUI에 '새로운 생성자'로 연결 정보 전달
                 new HiddenObjectClientGUI(
                     socket, in, out, 
                     playerName, 
-                    selectedDifficulty, // 대기방에서 선택한 난이도
-                    p // 서버가 보낸 ROUND_START 패킷 (정답 목록 포함)
+                    selectedDifficulty,
+                    p,
+                    this
                 );
                 break;
             default:
-                // 다른 패킷 (CLICK, RESULT 등)은 대기방에서 무시
                 break;
         }
     }
@@ -170,3 +301,4 @@ public class GameLauncher extends JFrame {
         SwingUtilities.invokeLater(() -> new GameLauncher());
     }
 }
+    
