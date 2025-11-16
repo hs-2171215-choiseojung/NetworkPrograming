@@ -11,10 +11,11 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
 import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
-//대기방(Lobby) 기능을 지원하는 게임 서버
+//대기방(Lobby) 기능을 지원하는 게임 서버 
 public class LobbyServer {
 
     private static final int PORT = 9999;
@@ -83,6 +84,9 @@ public class LobbyServer {
         private ObjectOutputStream out;
         private ObjectInputStream in;
         private String playerName;
+        private boolean isSinglePlayer = false;
+        private String playerDifficulty = "쉬움"; // 해당 플레이어의 난이도
+        private int playerCurrentRound = 1; // 해당 플레이어의 현재 라운드
 
         public ClientHandler(Socket socket) {
             this.socket = socket;
@@ -97,38 +101,57 @@ public class LobbyServer {
                 if (joinPacket.getType() == GamePacket.Type.JOIN) {
                     this.playerName = joinPacket.getSender();
                     
-                    if (!gameState.equals("LOBBY")) {
-                        sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
-                                     "오류: 이미 게임이 시작되었습니다."));
-                        socket.close();
-                        return;
+                    // 1인 플레이 모드 감지
+                    isSinglePlayer = joinPacket.getMessage().startsWith("SINGLE_");
+                    
+                    if (isSinglePlayer) {
+                        // 1인 플레이: 즉시 게임 시작
+                        String difficulty = joinPacket.getMessage().replace("SINGLE_", "");
+                        playerDifficulty = difficulty;
+                        playerCurrentRound = 1;
+                        System.out.println("[서버] " + this.playerName + " 님이 1인 플레이로 접속 (난이도: " + difficulty + ")");
+                        
+                        clients.put(this.playerName, this);
+                        scores.put(this.playerName, 0);
+                        
+                        // 1라운드 시작
+                        startRoundForPlayer(1);
+                        
+                    } else {
+                        // 멀티 플레이: 기존 로직
+                        if (!gameState.equals("LOBBY")) {
+                            sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
+                                         "오류: 이미 게임이 시작되었습니다."));
+                            socket.close();
+                            return;
+                        }
+                        
+                        if (clients.containsKey(this.playerName)) {
+                            sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
+                                         "오류: '" + this.playerName + "' 닉네임이 이미 사용 중입니다."));
+                            socket.close();
+                            return;
+                        }
+                        
+                        // 접속 성공
+                        System.out.println("[서버] " + this.playerName + " 님이 대기방에 접속했습니다.");
+                        clients.put(this.playerName, this);
+                        
+                        if (clients.size() == 1) {
+                            hostName = this.playerName;
+                            System.out.println("[서버] " + this.playerName + " 님이 방장이 되었습니다.");
+                        }
+                        
+                        playerReadyStatus.put(this.playerName, false);
+                        
+                        sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "[서버]", 
+                                     this.playerName + " 님 환영합니다!"));
+                        
+                        broadcast(new GamePacket(GamePacket.Type.MESSAGE, "[서버]", 
+                                     this.playerName + " 님이 들어왔습니다."));
+                        
+                        broadcastLobbyUpdate();
                     }
-                    
-                    if (clients.containsKey(this.playerName)) {
-                        sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
-                                     "오류: '" + this.playerName + "' 닉네임이 이미 사용 중입니다."));
-                        socket.close();
-                        return;
-                    }
-                    
-                    // 접속 성공
-                    System.out.println("[서버] " + this.playerName + " 님이 대기방에 접속했습니다.");
-                    clients.put(this.playerName, this);
-                    
-                    if (clients.size() == 1) {  // 현재 클라이언트 크기가 1일 때, 방금 접속한 클라이언트가 첫 번째 클라이언트로 방장 설정
-                        hostName = this.playerName;
-                        System.out.println("[서버] " + this.playerName + " 님이 방장이 되었습니다.");
-                    }
-                    
-                    playerReadyStatus.put(this.playerName, false);
-                    
-                    sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "[서버]", 
-                                 this.playerName + " 님 환영합니다!"));
-                    
-                    broadcast(new GamePacket(GamePacket.Type.MESSAGE, "[서버]", 
-                                 this.playerName + " 님이 들어왔습니다."));
-                    
-                    broadcastLobbyUpdate();
 
                 } else {
                     socket.close();
@@ -141,10 +164,27 @@ public class LobbyServer {
                 }
 
             } catch (Exception e) {
-                System.out.println("[서버] " + playerName + " 연결 끊김.");
+                if (isSinglePlayer) {
+                    System.out.println("[서버] [1인 플레이] " + playerName + " 연결 끊김.");
+                } else {
+                    System.out.println("[서버] " + playerName + " 연결 끊김.");
+                }
             } finally {
                 handleDisconnect();
             }
+        }
+        
+        // 해당 플레이어에게 라운드 시작
+        private void startRoundForPlayer(int round) {
+            playerCurrentRound = round;
+            gameLogic.loadRound(playerDifficulty, round);
+            sendPacket(new GamePacket(GamePacket.Type.ROUND_START, 
+                round, 
+                gameLogic.getImagePath(playerDifficulty, round),
+                gameLogic.getOriginalAnswers(playerDifficulty, round),
+                gameLogic.getOriginalDimension(playerDifficulty, round)
+            ));
+            System.out.println("[서버] [1인 플레이] " + playerName + " - 라운드 " + round + " 시작");
         }
         
         public void sendPacket(GamePacket packet) {
@@ -153,7 +193,9 @@ public class LobbyServer {
                     out.writeObject(packet);
                     out.flush();
                 }
-            } catch (IOException e) { }
+            } catch (IOException e) {
+                System.out.println("[서버] " + playerName + " 패킷 전송 실패: " + e.getMessage());
+            }
         }
         
         private void handleDisconnect() {
@@ -163,26 +205,31 @@ public class LobbyServer {
                 playerReadyStatus.remove(playerName); 
                 System.out.println("[서버] " + playerName + " 님이 퇴장했습니다.");
                 
-                // 방장이 나갔을 때 가장 먼저 접근 가능한 닉네임을 방장으로 설정
-                if (playerName.equals(hostName) && clients.size() > 0) {
-                    hostName = clients.keySet().iterator().next();
-                    System.out.println("[서버] " + hostName + " 님이 새 방장이 되었습니다.");
-                }
-                
-                // 모든 클라이언트가 퇴장하면 방장 이름은 null로 설정
-                if (clients.isEmpty()) {
-                    System.out.println("[서버] 모든 유저 퇴장. 대기방으로 리셋합니다.");
-                    gameState = "LOBBY";
-                    currentRound = 0;
-                    hostName = null;
-                }
-                
-                if (gameState.equals("LOBBY")) {
-                    broadcastLobbyUpdate();
+                // 1인 플레이어가 나간 경우
+                if (isSinglePlayer) {
+                    System.out.println("[서버] 1인 플레이 세션 종료.");
                 } else {
-                    broadcast(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
-                              playerName + " 님이 퇴장했습니다."));
-                    broadcast(new GamePacket(GamePacket.Type.SCORE, getScoreboardString()));
+                    // 방장이 나갔을 때 가장 먼저 접근 가능한 닉네임을 방장으로 설정
+                    if (playerName.equals(hostName) && clients.size() > 0) {
+                        hostName = clients.keySet().iterator().next();
+                        System.out.println("[서버] " + hostName + " 님이 새 방장이 되었습니다.");
+                    }
+                    
+                    // 모든 클라이언트가 퇴장하면 방장 이름은 null로 설정
+                    if (clients.isEmpty()) {
+                        System.out.println("[서버] 모든 유저 퇴장. 대기방으로 리셋합니다.");
+                        gameState = "LOBBY";
+                        currentRound = 0;
+                        hostName = null;
+                    }
+                    
+                    if (gameState.equals("LOBBY")) {
+                        broadcastLobbyUpdate();
+                    } else {
+                        broadcast(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
+                                  playerName + " 님이 퇴장했습니다."));
+                        broadcast(new GamePacket(GamePacket.Type.SCORE, getScoreboardString()));
+                    }
                 }
             }
             try {
@@ -196,8 +243,26 @@ public class LobbyServer {
     // --- 서버 메인 로직 (synchronized) ---
 
     // 패킷 처리 로직
-    private synchronized void handlePacket(ClientHandler handler, GamePacket packet) throws IOException { // IOException 제거
+    private synchronized void handlePacket(ClientHandler handler, GamePacket packet) throws IOException {
         
+        // 1인 플레이 모드 처리
+        if (handler.isSinglePlayer) {
+            switch (packet.getType()) {
+                case CLICK:
+                    handleClickForSinglePlayer(handler, packet);
+                    break;
+                case TIMER_END:
+                    // 타이머 종료 시 다음 라운드로
+                    handleTimerEndForSinglePlayer(handler);
+                    break;
+                default:
+                    // 다른 패킷은 무시
+                    break;
+            }
+            return;
+        }
+        
+        // 멀티 플레이 모드 처리
         if (!gameState.equals("IN_GAME")) { // 게임 중이 아닐 때
             switch (packet.getType()) {
                 case MESSAGE:
@@ -235,7 +300,7 @@ public class LobbyServer {
                              return;
                         }
                         
-                        if (clients.size() < 1) { // 1인 테스트용
+                        if (clients.size() < 1) {
                              handler.sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
                                                 "오류: 최소 2명 이상이어야 시작할 수 있습니다."));
                              return;
@@ -245,24 +310,24 @@ public class LobbyServer {
                         currentDifficulty = packet.getDifficulty();
                         currentGameMode = packet.getGameMode();
 
-						currentRound = 1;
+                        currentRound = 1;
                         gameLogic.loadRound(currentDifficulty, currentRound); 
-						gameState = "IN_GAME"; 
-						
-						System.out.println("[서버] " + currentDifficulty + "/" + currentGameMode + " 모드로 게임을 시작합니다.");
-						
-						broadcast(new GamePacket(GamePacket.Type.ROUND_START, 
-						    currentRound, 
-						    gameLogic.getImagePath(currentDifficulty, currentRound),
-						    gameLogic.getOriginalAnswers(currentDifficulty, currentRound),
-						    gameLogic.getOriginalDimension(currentDifficulty, currentRound)
-						));
-						
-						scores.clear();
-						for (String playerName : clients.keySet()) {
-						    scores.put(playerName, 0);
-						}
-						broadcast(new GamePacket(GamePacket.Type.SCORE, getScoreboardString()));
+                        gameState = "IN_GAME"; 
+                        
+                        System.out.println("[서버] " + currentDifficulty + "/" + currentGameMode + " 모드로 게임을 시작합니다.");
+                        
+                        broadcast(new GamePacket(GamePacket.Type.ROUND_START, 
+                            currentRound, 
+                            gameLogic.getImagePath(currentDifficulty, currentRound),
+                            gameLogic.getOriginalAnswers(currentDifficulty, currentRound),
+                            gameLogic.getOriginalDimension(currentDifficulty, currentRound)
+                        ));
+                        
+                        scores.clear();
+                        for (String playerName : clients.keySet()) {
+                            scores.put(playerName, 0);
+                        }
+                        broadcast(new GamePacket(GamePacket.Type.SCORE, getScoreboardString()));
                     }
                     break;
                 default:
@@ -273,7 +338,7 @@ public class LobbyServer {
         else { // 게임 중일 때
              switch (packet.getType()) {
                  case CLICK:
-                    String difficulty = currentDifficulty; // (O) 서버의 현재 난이도 사용
+                    String difficulty = currentDifficulty;
                     
                     int answerIndex = packet.getAnswerIndex();
                     System.out.println("[서버] " + handler.playerName + " 클릭: " + answerIndex + "번");
@@ -286,7 +351,6 @@ public class LobbyServer {
                     
                     String resultMsg;
                     
-                    // --- (점수 계산 로직 추가) ---
                     if (isCorrect) {
                         resultMsg = "정답!";
                         scores.put(handler.playerName, scores.get(handler.playerName) + 10);
@@ -301,16 +365,16 @@ public class LobbyServer {
                     
                     // 2. 점수판 갱신
                     broadcast(new GamePacket(GamePacket.Type.SCORE, getScoreboardString()));
-                    // --------------------------
 
                     // 3. 모든 정답 찾았는지 확인
                     if (isCorrect && gameLogic.areAllFound(difficulty, currentRound)) {
-                        broadcast(new GamePacket(GamePacket.Type.GAME_OVER, 
-                                  "게임 클리어! 모든 정답을 찾았습니다."));
-                        gameState = "LOBBY"; 
-                        currentRound = 0;
-                        broadcastLobbyUpdate(); 
+                        handleRoundComplete(difficulty);
                     }
+                    break;
+                    
+                case TIMER_END:
+                    // 타이머 종료 시 다음 라운드로
+                    handleRoundComplete(currentDifficulty);
                     break;
                     
                 case MESSAGE:
@@ -323,12 +387,122 @@ public class LobbyServer {
         }
     }
     
+    // 멀티플레이 라운드 완료 처리
+    private void handleRoundComplete(String difficulty) {
+        if (gameLogic.hasNextRound(difficulty, currentRound)) {
+            // 다음 라운드로
+            broadcast(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
+                      "라운드 " + currentRound + " 완료! 3초 후 다음 라운드 시작..."));
+            
+            Timer timer = new Timer();
+            timer.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    currentRound++;
+                    gameLogic.loadRound(difficulty, currentRound);
+                    broadcast(new GamePacket(GamePacket.Type.ROUND_START, 
+                        currentRound, 
+                        gameLogic.getImagePath(difficulty, currentRound),
+                        gameLogic.getOriginalAnswers(difficulty, currentRound),
+                        gameLogic.getOriginalDimension(difficulty, currentRound)
+                    ));
+                    System.out.println("[서버] 라운드 " + currentRound + " 시작");
+                }
+            }, 3000);
+        } else {
+            // 모든 라운드 완료
+            broadcast(new GamePacket(GamePacket.Type.GAME_OVER, 
+                      "모든 라운드 클리어! 게임 종료!"));
+            gameState = "LOBBY"; 
+            currentRound = 0;
+            broadcastLobbyUpdate(); 
+        }
+    }
+    
+    // 1인 플레이 클릭 처리
+    private synchronized void handleClickForSinglePlayer(ClientHandler handler, GamePacket packet) {
+        String difficulty = handler.playerDifficulty;
+        int round = handler.playerCurrentRound;
+        
+        int answerIndex = packet.getAnswerIndex();
+        
+        System.out.println("[서버] [1인 플레이] " + handler.playerName + " 라운드 " + round + " 클릭: " + answerIndex + "번");
+        
+        boolean isCorrect = gameLogic.checkAnswer(difficulty, round, answerIndex);
+        
+        String resultMsg;
+        
+        if (isCorrect) {
+            resultMsg = "정답!";
+            int currentScore = scores.getOrDefault(handler.playerName, 0);
+            scores.put(handler.playerName, currentScore + 10);
+        } else {
+            resultMsg = "오답 (또는 이미 찾음)!";
+            int currentScore = scores.getOrDefault(handler.playerName, 0);
+            scores.put(handler.playerName, currentScore - 5);
+        }
+        
+        // 1. 클릭 결과 전송
+        handler.sendPacket(new GamePacket(GamePacket.Type.RESULT, 
+                    handler.playerName, answerIndex, isCorrect, resultMsg));
+        
+        // 2. 점수판 갱신
+        handler.sendPacket(new GamePacket(GamePacket.Type.SCORE, getScoreboardString()));
+        
+        // 3. 모든 정답 찾았는지 확인
+        if (isCorrect && gameLogic.areAllFound(difficulty, round)) {
+            handleRoundCompleteForSinglePlayer(handler);
+        }
+    }
+    
+    // 1인 플레이 타이머 종료 처리
+    private synchronized void handleTimerEndForSinglePlayer(ClientHandler handler) {
+        System.out.println("[서버] [1인 플레이] " + handler.playerName + " 타이머 종료");
+        handleRoundCompleteForSinglePlayer(handler);
+    }
+    
+    // 1인 플레이 라운드 완료 처리
+    private synchronized void handleRoundCompleteForSinglePlayer(ClientHandler handler) {
+        String difficulty = handler.playerDifficulty;
+        int completedRound = handler.playerCurrentRound;
+        
+        System.out.println("[서버] [1인 플레이] " + handler.playerName + " 라운드 " + completedRound + " 완료 체크");
+        
+        if (gameLogic.hasNextRound(difficulty, completedRound)) {
+            // 다음 라운드로
+            handler.sendPacket(new GamePacket(GamePacket.Type.MESSAGE, "SERVER", 
+                      "라운드 " + completedRound + " 완료! 3초 후 다음 라운드 시작..."));
+            
+            System.out.println("[서버] [1인 플레이] " + handler.playerName + " 다음 라운드 준비 중...");
+            
+            Timer timer = new Timer();
+            timer.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    int nextRound = completedRound + 1;
+                    System.out.println("[서버] [1인 플레이] " + handler.playerName + " 라운드 " + nextRound + " 시작 시도");
+                    try {
+                        handler.startRoundForPlayer(nextRound);
+                    } catch (Exception e) {
+                        System.out.println("[서버] [1인 플레이] 라운드 시작 실패: " + e.getMessage());
+                        e.printStackTrace();
+                    }
+                }
+            }, 3000);
+        } else {
+            // 모든 라운드 완료
+            System.out.println("[서버] [1인 플레이] " + handler.playerName + " 모든 라운드 완료!");
+            handler.sendPacket(new GamePacket(GamePacket.Type.GAME_OVER, 
+                      "모든 라운드 클리어! 게임 종료!"));
+        }
+    }
+    
     // 모든 대기방 클라이언트에게 현재 유저 목록/설정 전송
     private synchronized void broadcastLobbyUpdate() {
         broadcast(new GamePacket(
             GamePacket.Type.LOBBY_UPDATE,
             hostName,
-            new ConcurrentHashMap<>(playerReadyStatus), // 복사본 생성
+            new ConcurrentHashMap<>(playerReadyStatus),
             currentDifficulty,
             currentGameMode
         ));
@@ -337,7 +511,9 @@ public class LobbyServer {
     // 접속한 '모든' 클라이언트에게 패킷 전송
     private synchronized void broadcast(GamePacket packet) {
         for (ClientHandler handler : clients.values()) {
-            handler.sendPacket(packet);
+            if (!handler.isSinglePlayer) {
+                handler.sendPacket(packet);
+            }
         }
     }
 
