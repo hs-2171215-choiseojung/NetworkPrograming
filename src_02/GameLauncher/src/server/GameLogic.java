@@ -74,7 +74,7 @@ public class GameLogic {
         answers.add(new Rectangle(793, 738, 40, 40));
         
         roundAnswers.put(key, answers);
-        roundImagePaths.put(key, "images/k1.jpg");
+        roundImagePaths.put(key, "images/easy1.jpg");
         foundStatus.put(key, new boolean[answers.size()]);
         originalDimensions.put(key, new Dimension(850, 1202));
     }
@@ -234,7 +234,7 @@ public class GameLogic {
     
     public String getImagePath(String difficulty, int round) {
         String key = difficulty + "_" + round;
-        return roundImagePaths.getOrDefault(key, "images/k1.jpg");
+        return roundImagePaths.getOrDefault(key, "images/easy1.jpg");
     }
     
     public List<Rectangle> getOriginalAnswers(String difficulty, int round) {

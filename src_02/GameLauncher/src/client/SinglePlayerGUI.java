@@ -80,11 +80,11 @@ public class SinglePlayerGUI extends JFrame {
         topBar.setBackground(new Color(220, 220, 220));
         topBar.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
         JLabel titleLabel = new JLabel("숨은 그림 찾기 (1인 플레이)");
-        titleLabel.setFont(new Font("맑은 고딕", Font.BOLD, 24));
+        titleLabel.setFont(new Font("맑은 고딕", Font.BOLD, 20)); // 24 -> 20
         timerLabel = new JLabel("타이머: 120초", SwingConstants.CENTER);
-        timerLabel.setFont(new Font("맑은 고딕", Font.BOLD, 20));
+        timerLabel.setFont(new Font("맑은 고딕", Font.BOLD, 18)); // 20 -> 18
         roundLabel = new JLabel("라운드 1", SwingConstants.RIGHT);
-        roundLabel.setFont(new Font("맑은 고딕", Font.BOLD, 20));
+        roundLabel.setFont(new Font("맑은 고딕", Font.BOLD, 18)); // 20 -> 18
         topBar.add(titleLabel, BorderLayout.WEST);
         topBar.add(timerLabel, BorderLayout.CENTER);
         topBar.add(roundLabel, BorderLayout.EAST);
@@ -92,14 +92,14 @@ public class SinglePlayerGUI extends JFrame {
 
         JPanel centerPanel = new JPanel(new BorderLayout());
         gameBoardPanel = new GameBoardPanel();
-        gameBoardPanel.setPreferredSize(new Dimension(600, 450));
+        gameBoardPanel.setPreferredSize(new Dimension(500, 400)); // 600x450 -> 500x400
         centerPanel.add(gameBoardPanel, BorderLayout.CENTER);
 
         JPanel rightPanel = new JPanel(new BorderLayout());
-        rightPanel.setPreferredSize(new Dimension(220, 0));
+        rightPanel.setPreferredSize(new Dimension(200, 0)); // 220 -> 200
         statusArea = new JTextArea("[상태창]\n");
         statusArea.setEditable(false);
-        statusArea.setFont(new Font("맑은 고딕", Font.PLAIN, 12));
+        statusArea.setFont(new Font("맑은 고딕", Font.PLAIN, 11)); // 12 -> 11
         statusArea.setLineWrap(true);
         statusArea.setWrapStyleWord(true);
         JScrollPane statusScroll = new JScrollPane(statusArea);
@@ -107,7 +107,7 @@ public class SinglePlayerGUI extends JFrame {
         rightPanel.add(statusScroll, BorderLayout.CENTER);
         scoreArea = new JTextArea();
         scoreArea.setEditable(false);
-        scoreArea.setFont(new Font("맑은 고딕", Font.BOLD, 14));
+        scoreArea.setFont(new Font("맑은 고딕", Font.BOLD, 13)); // 14 -> 13
         scoreArea.setBackground(Color.BLACK);
         scoreArea.setForeground(Color.GREEN);
         scoreArea.setMargin(new Insets(5, 5, 5, 5));
@@ -121,7 +121,7 @@ public class SinglePlayerGUI extends JFrame {
         bottomBar.setBackground(new Color(230, 230, 230));
         bottomBar.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         JLabel hintLabel = new JLabel("Q: 힌트     H: 도움말     ESC: 종료");
-        hintLabel.setFont(new Font("맑은 고딕", Font.PLAIN, 12));
+        hintLabel.setFont(new Font("맑은 고딕", Font.PLAIN, 11)); // 12 -> 11
         bottomBar.add(hintLabel, BorderLayout.WEST);
         add(bottomBar, BorderLayout.SOUTH);
     }
@@ -442,7 +442,7 @@ public class SinglePlayerGUI extends JFrame {
                 
                 int imgWidth = originalDimension.width;
                 int imgHeight = originalDimension.height;
-                int baseWidth = 600; 
+                int baseWidth = 500; 
                 double ratio = (double) imgHeight / imgWidth;
                 int newHeight = (int) (baseWidth * ratio);
                 setPreferredSize(new Dimension(baseWidth, newHeight));
